@@ -1,7 +1,8 @@
 package main
 
 import (
-	"encoding/json"
+	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -9,24 +10,18 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/user"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/drsigned/gos"
 	"github.com/logrusorgru/aurora/v3"
 )
 
 type options struct {
-	engine   string
-	pages    int
-	query    string
-	template bool
-}
-
-type dork struct {
-	Query string `json:"query,omitempty"`
+	engine string
+	pages  int
+	query  string
 }
 
 var o options
@@ -37,19 +32,15 @@ func banner() {
  ___(_) __ _  __| | ___  _ __| | __
 / __| |/ _`+"`"+` |/ _`+"`"+` |/ _ \| '__| |/ /
 \__ \ | (_| | (_| | (_) | |  |   < 
-|___/_|\__, |\__,_|\___/|_|  |_|\_\ v1.0.0
+|___/_|\__, |\__,_|\___/|_|  |_|\_\ v1.2.0
        |___/
 `).Bold())
 }
 
 func init() {
 	flag.StringVar(&o.engine, "e", "google", "")
-
 	flag.IntVar(&o.pages, "p", 1, "")
-
 	flag.StringVar(&o.query, "q", "", "")
-
-	flag.BoolVar(&o.template, "t", false, "")
 
 	flag.Usage = func() {
 		banner()
@@ -60,28 +51,12 @@ func init() {
 		h += "\nOPTIONS:\n"
 		h += "  -e              search engine (default: google)\n"
 		h += "  -p              number of pages (default: 1)\n"
-		h += "  -q              search query\n"
-		h += "  -t              template query mode (default: false)\n"
+		h += "  -q              search query (use `-q -` to read from stdin)\n"
 
 		fmt.Fprintf(os.Stderr, h)
 	}
 
 	flag.Parse()
-}
-
-// get dorks dir
-func getDorksDir(engine string) (string, error) {
-	currentUser, err := user.Current()
-	if err != nil {
-		return "", err
-	}
-
-	path := filepath.Join(currentUser.HomeDir, ".config/sigdork/"+engine)
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		return path, nil
-	}
-
-	return filepath.Join(currentUser.HomeDir, ".sigdork/"+engine), nil
 }
 
 // get html
@@ -142,33 +117,42 @@ func search(engine string, query string, pages int) {
 }
 
 func main() {
-	if o.template {
-		dorksDir, err := getDorksDir(o.engine)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "unable to open user's dorks directory")
-			return
-		}
+	queries := getQueries(o.query)
 
-		filename := filepath.Join(dorksDir, o.query+".json")
-		f, err := os.Open(filename)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "no such dork")
-			return
-		}
-
-		defer f.Close()
-
-		d := dork{}
-		dec := json.NewDecoder(f)
-		err = dec.Decode(&d)
-
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "pattern file '%s' is malformed: %s\n", filename, err)
-			return
-		}
-
-		o.query = d.Query
+	for query := range queries {
+		search(o.engine, query, o.pages)
 	}
+}
 
-	search(o.engine, o.query, o.pages)
+func getQueries(query string) chan string {
+	queries := make(chan string)
+
+	go func() {
+		defer close(queries)
+
+		if query == "-" {
+			if !gos.HasStdin() {
+				log.Fatalln(errors.New("no stdin"))
+			}
+
+			scanner := bufio.NewScanner(os.Stdin)
+
+			for scanner.Scan() {
+				if scanner.Text() != "" {
+					queries <- scanner.Text()
+				}
+			}
+
+			if scanner.Err() != nil {
+				log.Fatalln(scanner.Err())
+			}
+
+		} else {
+			if query != "" {
+				queries <- query
+			}
+		}
+	}()
+
+	return queries
 }
